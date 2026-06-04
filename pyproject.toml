@@ -1,0 +1,22 @@
+[project]
+name = "paulo-cli"
+version = "0.1.0"
+description = "多 Agent 编排 CLI"
+requires-python = ">=3.11"
+dependencies = [
+    "rich",
+    "python-dotenv",
+    "pydantic",
+    "openai",
+    "anthropic",
+]
+
+[project.scripts]
+paulo = "paulo.main:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["paulo", "paulo.*"]
