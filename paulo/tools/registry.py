@@ -219,13 +219,14 @@ TOOLS: list[dict] = [
     # ── 队友管理 ────────────────────────────────────────
     {
         "name": "spawn_teammate",
-        "description": "启动一个持久化自主队友（后台线程）。",
+        "description": "启动一个持久化自主队友（后台线程）。permission: readonly/editor/full。",
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
                 "role": {"type": "string"},
                 "prompt": {"type": "string"},
+                "permission": {"type": "string", "enum": ["readonly", "editor", "full"]},
             },
             "required": ["name", "role", "prompt"],
         },
@@ -415,6 +416,7 @@ def build_handlers(
         # ── 队友管理 ──────────────────────────────────────
         "spawn_teammate":   lambda **kw: team.spawn(
                                 kw["name"], kw["role"], kw["prompt"],
+                                permission=kw.get("permission", "full"),
                             ),
         "list_teammates":   lambda **kw: team.list_all(),
         "send_message":     lambda **kw: bus.send(

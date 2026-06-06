@@ -326,7 +326,16 @@ class TeammateManager:
             member["status"] = status
             self._save_config()
 
-    def spawn(self, name: str, role: str, prompt: str) -> str:
+    # ── 权限预设 ──────────────────────────────────────────
+    PERMISSIONS = {
+        "readonly": {"bash", "read_file", "send_message", "idle"},
+        "editor":   {"bash", "read_file", "write_file", "edit_file",
+                     "send_message", "idle", "task"},
+        "full":     None,  # None = 全工具
+    }
+
+    def spawn(self, name: str, role: str, prompt: str,
+              permission: str = "full") -> str:
         """
         启动（或重用）一个队友。
 
@@ -334,9 +343,10 @@ class TeammateManager:
         如果处于 working 状态，拒绝重复启动（防止冲突）。
 
         Args:
-            name:   队友名称（唯一标识）
-            role:   角色描述（如 "代码审查员"、"测试工程师"）
-            prompt: 初始任务描述
+            name:       队友名称（唯一标识）
+            role:       角色描述（如 "代码审查员"、"测试工程师"）
+            prompt:     初始任务描述
+            permission: 权限预设: readonly | editor | full
 
         Returns:
             启动确认信息
@@ -359,15 +369,16 @@ class TeammateManager:
         # 在独立线程中启动队友的主循环
         thread = threading.Thread(
             target=self._agent_loop,
-            args=(name, role, prompt),
+            args=(name, role, prompt, permission),
             daemon=True,
         )
         thread.start()
         self.threads[name] = thread
 
-        return f"已启动队友 '{name}' (角色: {role})"
+        return f"已启动队友 '{name}' (角色: {role}, 权限: {permission})"
 
-    def _agent_loop(self, name: str, role: str, prompt: str):
+    def _agent_loop(self, name: str, role: str, prompt: str,
+                    permission: str = "full"):
         """
         队友的主循环 —— 工作 + 空闲 + 关机。
 
@@ -389,7 +400,7 @@ class TeammateManager:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        tools = self._build_teammate_tools()
+        tools = self._build_teammate_tools(permission)
 
         # ── 外层循环：working ↔ idle ↔ shutdown ──────────────
         while True:
@@ -575,16 +586,14 @@ class TeammateManager:
             self._set_status(name, "working")
 
     @staticmethod
-    def _build_teammate_tools() -> list[dict]:
+    def _build_teammate_tools(permission: str = "full") -> list[dict]:
         """
-        构建队友的工具集 JSON Schema。
+        构建队友的工具集 JSON Schema，按权限预设过滤。
 
-        队友工具集包含主代理的大部分工具，外加：
-        - idle：主动声明工作完成，进入空闲等待
-        - send_message：向其他队友或 lead 发送消息
-        - claim_task：从任务板认领任务
+        permission: readonly | editor | full
         """
-        return [
+        allowed = TeammateManager.PERMISSIONS.get(permission)
+        full_tools = [
             {
                 "name": "bash",
                 "description": "执行 shell 命令。",
@@ -658,6 +667,9 @@ class TeammateManager:
                 },
             },
         ]
+        if allowed is not None:
+            return [t for t in full_tools if t["name"] in allowed]
+        return full_tools
 
     def list_all(self) -> str:
         """列出所有队友及状态（用于 /team 命令）"""
