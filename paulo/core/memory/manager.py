@@ -275,7 +275,7 @@ def learn_from_session(history: list[dict], memory_mgr: MemoryManager) -> int:
 
     if added:
         from ...config import console
-        console.print(f"[dim]  从对话中学习了 {added} 条经验[/dim]")
+        console.print(f"[dim]  learned {added}  items[/dim]")
     return added
 
 

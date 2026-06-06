@@ -238,8 +238,8 @@ class MessageBus:
                 msg = Message.model_validate_json(line)
                 messages.append(msg.model_dump(by_alias=True))
             except Exception:
-                # 损坏的消息跳过并记录警告（实际场景很少发生）
-                console.print(f"[yellow][警告][/yellow] 跳过损坏的消息: {line[:80]}...")
+                # 损坏的消息跳过并记录WARN（实际场景很少发生）
+                console.print(f"[yellow][WARN][/yellow] skip corrupt msg: {line[:80]}...")
 
         # 读后清空，确保每条消息只被处理一次
         inbox_path.write_text("", encoding="utf-8")

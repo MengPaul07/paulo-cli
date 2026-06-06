@@ -293,6 +293,11 @@ class TeammateManager:
         self.config_path = TEAM_DIR / "config.json"
         self.config = self._load_config()
         self.threads: dict[str, threading.Thread] = {}
+        self._on_event: callable | None = None  # 队友事件回调（给渲染器）
+
+    def set_event_callback(self, on_event: callable):
+        """设置队友活动的事件回调，用于渲染器统一管理。"""
+        self._on_event = on_event
 
     def _load_config(self) -> dict:
         """加载团队配置文件，不存在则返回默认配置"""
@@ -470,12 +475,16 @@ class TeammateManager:
                         except Exception as e:
                             output = f"工具执行错误: {e}"
 
-                    # 控制台输出：方便人工观察多 agent 行为
-                    console.print(
-                        f"  [dim][{name}][/dim] "
-                        f"[bold cyan]{block.name}[/bold cyan]: "
-                        f"{output[:120]}"
-                    )
+                    # 队友活动 → 发事件给渲染器统一管理
+                    from ...core.renderer.events import Event, EventType
+                    _on_ev = getattr(self, "_on_event", None)
+                    if _on_ev:
+                        _on_ev(Event(
+                            type=EventType.TEAMMATE,
+                            teammate_name=name,
+                            teammate_action=block.name,
+                            tool_output=output[:200],
+                        ))
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,

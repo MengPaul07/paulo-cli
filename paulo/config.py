@@ -12,9 +12,11 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 from rich.console import Console
 
+from .core.renderer.tui import PAULO_THEME
+
 # rich 全局 Console 实例 —— 所有模块统一走这个输出
 # 好处：统一的主题、宽度、颜色风格，一处配置全局生效
-console = Console()
+console = Console(theme=PAULO_THEME, highlight=False)
 
 # ── 加载 .env 文件 ─────────────────────────────────────────────
 # override=True: .env 中已存在的变量也会被覆盖（确保 .env 优先生效）

@@ -11,15 +11,20 @@ from enum import StrEnum
 class EventType(StrEnum):
     """事件类型枚举"""
     # ── LLM 流式 ──────────────────────────
-    THINKING    = "thinking"       # LLM 调用开始，等待首 token
-    TEXT_DELTA  = "text_delta"     # 流式文本增量
-    TEXT_DONE   = "text_done"      # LLM 本轮回复结束（stop_reason=end_turn）
+    THINKING        = "thinking"         # LLM 调用开始，等待首 token
+    THINKING_DELTA  = "thinking_delta"   # 模型内部思考过程的增量
+    THINKING_DONE   = "thinking_done"    # 思考阶段结束
+    TEXT_DELTA      = "text_delta"       # 流式文本增量
+    TEXT_DONE       = "text_done"        # LLM 本轮回复结束
 
     # ── 工具调用 ──────────────────────────
     TOOL_CALL   = "tool_call"      # LLM 请求调工具
     TOOL_RESULT = "tool_result"    # 工具执行完成
     HITL_ASK    = "hitl_ask"       # 敏感操作弹审批框
     HITL_RESULT = "hitl_result"    # 审批结果
+
+    # ── 多 Agent ───────────────────────────
+    TEAMMATE    = "teammate"       # 队友活动日志
 
     # ── 系统状态 ──────────────────────────
     COMPACT     = "compact"        # 对话压缩（手动/自动）
@@ -50,6 +55,10 @@ class Event:
 
     # ── COMPACT ────────────────────────────
     compact_reason: str = ""        # manual / auto
+
+    # ── TEAMMATE ───────────────────────────
+    teammate_name: str = ""        # 队友名
+    teammate_action: str = ""      # send_message / claim_task / idle / ...
 
     # ── ERROR ──────────────────────────────
     error_msg: str = ""

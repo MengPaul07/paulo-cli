@@ -58,7 +58,7 @@ class MCPServer:
                 "clientInfo": {"name": "paulo", "version": "0.1.0"},
             })
             if not init_resp:
-                console.print(f"[yellow]MCP {self.name}: 初始化失败[/yellow]")
+                console.print(f"[yellow]MCP {self.name}: init failed[/yellow]")
                 return False
 
             # 获取工具列表
@@ -66,10 +66,10 @@ class MCPServer:
             if tools_resp and "tools" in tools_resp.get("result", {}):
                 self._tools = tools_resp["result"]["tools"]
 
-            console.print(f"[dim]MCP {self.name}: {len(self._tools)} 个工具已加载[/dim]")
+            console.print(f"[dim]MCP {self.name}: {len(self._tools)}  tools loaded[/dim]")
             return True
         except Exception as e:
-            console.print(f"[yellow]MCP {self.name}: 连接失败 ({e})[/yellow]")
+            console.print(f"[yellow]MCP {self.name}: connect failed ({e})[/yellow]")
             return False
 
     def _send(self, method: str, params: dict) -> dict | None:
@@ -144,7 +144,7 @@ class MCPManager:
         try:
             config = json.loads(open(path).read())
         except Exception:
-            console.print(f"[yellow]MCP 配置解析失败: {path}[/yellow]")
+            console.print(f"[yellow]MCP config error: {path}[/yellow]")
             return 0
 
         servers = config.get("mcpServers", {})

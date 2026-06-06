@@ -41,6 +41,7 @@ main.py —— 多 Agent 编排 CLI 入口
 import io
 import json
 import sys
+import time
 from enum import Enum
 
 from .config import WORKDIR, SKILLS_DIR, TOKEN_THRESHOLD, client, MODEL, console
@@ -170,7 +171,7 @@ if _mcp_count > 0:
     TOOLS = list(TOOLS) + _mcp.get_tools()
     TOOL_HANDLERS = dict(TOOL_HANDLERS) | _mcp.get_handlers()
     READONLY_TOOLS = build_readonly_tools()  # 重建（MCP 工具只在全工具模式下可用）
-    console.print(f"[dim]MCP: {_mcp_count} 个 Server, 共 {len(TOOLS)} 个工具[/dim]")
+    console.print(f"[dim]MCP: {_mcp_count}  servers,  {len(TOOLS)}  tools[/dim]")
 
 
 from .tools.executor import ToolExecutor
@@ -265,10 +266,29 @@ def agent_loop(messages: list, on_event: callable = None):
                 max_tokens=8000,
             ) as stream:
                 on_event(Event(type=EventType.THINKING))
-                for text_delta in stream.text_stream:
-                    if text_delta:
-                        on_event(Event(type=EventType.TEXT_DELTA, content=text_delta))
+                in_thinking = False
+                thinking_fired = True  # THINKING 只发一次
+                for event in stream:
+                    if event.type == "content_block_start":
+                        if getattr(event.content_block, "type", "") == "thinking":
+                            in_thinking = True
+                        else:
+                            in_thinking = False
+                    elif event.type == "content_block_delta":
+                        if in_thinking and getattr(event.delta, "type", "") == "thinking_delta":
+                            on_event(Event(type=EventType.THINKING_DELTA,
+                                           content=getattr(event.delta, "thinking", "")))
+                        elif getattr(event.delta, "type", "") == "text_delta":
+                            in_thinking = False
+                            on_event(Event(type=EventType.TEXT_DELTA,
+                                           content=getattr(event.delta, "text", "")))
+                    elif event.type == "content_block_stop" and in_thinking:
+                        in_thinking = False
+                        on_event(Event(type=EventType.THINKING_DONE))
                 final_message = stream.get_final_message()
+                # 记录 token 消耗
+                from .core.token_tracker import tracker
+                tracker.add(final_message.usage)
         except KeyboardInterrupt:
             on_event(Event(type=EventType.INTERRUPT))
             raise
@@ -301,11 +321,13 @@ def agent_loop(messages: list, on_event: callable = None):
                     manual_compress = True
 
                 # ToolExecutor 统一执行（内含 HITL 审批）
+                t_tool = time.time()
                 result = executor.execute(block)
                 on_event(Event(
                     type=EventType.TOOL_RESULT,
                     tool_name=block.name,
                     tool_output=str(result.get("content", "")),
+                    tool_elapsed=time.time() - t_tool,
                 ))
                 tool_results.append(result)
 
@@ -359,17 +381,18 @@ def main():
         except (io.UnsupportedOperation, AttributeError):
             pass
 
-    # 创建渲染器，注入到 agent_loop 的默认回调
+    # 创建渲染器
+    import paulo.main as _pm
     from .core.renderer.rich_renderer import RichRenderer
-    import paulo.main as pm
-    pm._renderer = RichRenderer()
+    _pm._renderer = RichRenderer()
+    TEAM.set_event_callback(_pm._renderer.handle)
 
     # 用 dict 包装模式状态，让 Repl 可以跨模块修改
-    from .repl.repl import Repl
+    from .command.commander import Commander
     mode_ref = {"mode": agent_mode}
     plan_ref = {"id": _active_plan_id}
 
-    repl = Repl(
+    repl = Commander(
         history=[],
         agent_loop_fn=agent_loop,
         plans=PLANS,
@@ -385,3 +408,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

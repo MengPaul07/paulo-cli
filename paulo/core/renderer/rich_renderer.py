@@ -1,139 +1,236 @@
-"""
-Rich 渲染器 —— Claude Code 风格终端 UI
+"""Event-driven Rich renderer for the Paulo coding CLI."""
 
-色板:
-  cyan bold    工具名、交互提示
-  green        成功状态
-  yellow       警告、HITL 审批
-  dim (#888)   元数据、预览、分隔线
-  white        正文、主标题
+from __future__ import annotations
 
-排版:
-  工具日志:     ╶ tool_name · 0.3s
-               预览内容（dim, 最多 200 字）
-  HITL:         ┌ 黄色标题
-                │ 目标 + 预览
-                └ 选项
-  流式正文:     Markdown（代码高亮、表格、列表）
-  状态:         · compact / · interrupted（dim）
-"""
+import time
 
-from rich.markdown import Markdown
+from rich.console import Group
 from rich.live import Live
+from rich.markdown import Markdown
+from rich.padding import Padding
+from rich.panel import Panel
+from rich.text import Text
 
 from ...config import console
 from .events import Event, EventType
+from .tui import BODY_LEFT, key_row, notice, prefix, preview_block, status_line, tool_line, trim
 
 
 class RichRenderer:
-    """
-    事件驱动渲染器。
-
-    begin_loop() / end_loop() 控制 Live 的启停——
-    Live 只在 agent_loop 执行期间活跃，REPL 等输入时不占用终端。
-    """
+    """Render agent events as a compact, professional terminal workflow."""
 
     def __init__(self):
         self._live: Live | None = None
         self._buffer = ""
-
-    # ── 生命周期 ──────────────────────────────────────────────
+        self._thinking_buf = ""
+        self._t0 = 0.0
+        self._char_count = 0
+        self._first_turn = True
+        self._finalized = False
+        self.show_chatroom = False
 
     def begin_loop(self):
-        """agent_loop 开始前调用，启动 Live 渲染区。"""
         self._live = Live(
-            Markdown(""), console=console,
-            auto_refresh=False, vertical_overflow="visible",
+            self._assistant_view(""),
+            console=console,
+            auto_refresh=False,
+            vertical_overflow="visible",
+            transient=True,
         )
         self._live.start()
         self._buffer = ""
+        self._thinking_buf = ""
+        self._finalized = False
 
     def end_loop(self):
-        """agent_loop 结束前调用，释放终端。"""
         if self._live:
             self._live.stop()
             self._live = None
         self._buffer = ""
 
-    # ── 分发 ──────────────────────────────────────────────────
-
     def handle(self, event: Event):
         if self._live is None:
-            self.begin_loop()  # 容错：如果没调 begin_loop，自动开
+            self.begin_loop()
 
-        t = event.type
-        if t == EventType.THINKING:       self._thinking()
-        elif t == EventType.TEXT_DELTA:    self._text_delta(event)
-        elif t == EventType.TEXT_DONE:     pass
-        elif t == EventType.TOOL_RESULT:   self._tool_result(event)
-        elif t == EventType.HITL_ASK:      self._hitl_ask(event)
-        elif t == EventType.HITL_RESULT:   self._hitl_result(event)
-        elif t == EventType.COMPACT:       self._compact(event)
-        elif t == EventType.NAG:           self._nag()
-        elif t == EventType.INTERRUPT:     self._interrupt()
-        elif t == EventType.ERROR:         self._error(event)
+        event_type = event.type
+        if event_type == EventType.THINKING:
+            self._thinking()
+        elif event_type == EventType.THINKING_DELTA:
+            self._thinking_delta(event)
+        elif event_type == EventType.THINKING_DONE:
+            self._thinking_done()
+        elif event_type == EventType.TEXT_DELTA:
+            self._text_delta(event)
+        elif event_type == EventType.TEXT_DONE:
+            self._text_done()
+        elif event_type == EventType.TOOL_RESULT:
+            self._tool_result(event)
+        elif event_type == EventType.HITL_ASK:
+            self._hitl_ask(event)
+        elif event_type == EventType.HITL_RESULT:
+            self._hitl_result(event)
+        elif event_type == EventType.COMPACT:
+            self._compact(event)
+        elif event_type == EventType.NAG:
+            self._nag()
+        elif event_type == EventType.TEAMMATE:
+            self._teammate(event)
+        elif event_type == EventType.INTERRUPT:
+            self._interrupt()
+        elif event_type == EventType.ERROR:
+            self._error(event)
 
-    # ── LLM 流式 ──────────────────────────────────────────────
+    def _assistant_view(
+        self,
+        body: str,
+        thinking: str = "",
+        label: str = "",
+        style: str = "paulo.accent",
+    ) -> Group:
+        renderables = []
+        if label:
+            renderables.append(prefix(label, style))
+        if body.strip():
+            # ● 领首行，2 空格统一缩进
+            renderables.append(Padding(
+                Markdown(f"●  {body.strip()}"), (0, 0, 0, 2)
+            ))
+        elif thinking:
+            renderables.append(Padding(Text(thinking, style="paulo.dim italic"), (0, 0, 0, BODY_LEFT)))
+        else:
+            renderables.append(Padding(Text("thinking...", style="paulo.dim italic"), (0, 0, 0, BODY_LEFT)))
+        return Group(*renderables)
+
+    def _sep(self):
+        if not self._first_turn:
+            console.print()
+            console.print("  [paulo.faint]" + "-" * 48 + "[/]")
+        self._first_turn = False
 
     def _thinking(self):
-        """每轮 LLM 调用前重置缓冲区。"""
+        self._sep()
         self._buffer = ""
+        self._thinking_buf = ""
+        self._char_count = 0
+        self._t0 = time.time()
         if self._live is None:
             self.begin_loop()
-        self._live.update(Markdown("*Thinking…*"), refresh=True)
+        self._live.update(
+            self._assistant_view("", "thinking...", "thinking", "paulo.thinking"),
+            refresh=True,
+        )
 
     def _text_delta(self, event: Event):
-        if event.content:
-            self._buffer += event.content
-            self._live.update(Markdown(self._buffer), refresh=True)
+        if not event.content:
+            return
+        self._buffer += event.content
+        self._char_count += len(event.content)
+        self._live.update(self._assistant_view(self._buffer), refresh=True)
 
-    # ── 工具 ──────────────────────────────────────────────────
+    def _text_done(self):
+        from ..token_tracker import tracker
+
+        if self._finalized:
+            return
+        self._finalized = True
+
+        if self._live:
+            self._live.stop()
+            self._live = None
+
+        if self._buffer.strip():
+            console.print()  # 与 thinking 空一行
+            console.print(self._assistant_view(self._buffer))
+
+        elapsed = time.time() - self._t0
+        est = max(1, self._char_count // 4)
+        console.print(
+            status_line(
+                "usage",
+                f"{elapsed:.1f}s | ~{est} tok streamed | {tracker.summary()}",
+                "paulo.dim",
+            )
+        )
+
+    def _thinking_delta(self, event: Event):
+        if not event.content:
+            return
+        self._thinking_buf += event.content
+        preview = trim(self._thinking_buf, 220)
+        if self._buffer.strip():
+            self._live.update(self._assistant_view(self._buffer), refresh=True)
+        else:
+            self._live.update(
+                self._assistant_view("", preview, "thinking", "paulo.thinking"),
+                refresh=True,
+            )
+
+    def _thinking_done(self):
+        elapsed = time.time() - self._t0
+        if len(self._thinking_buf) > 30:
+            console.print(status_line("thinking", f"{elapsed:.1f}s | {trim(self._thinking_buf, 120)}", "paulo.thinking"))
+        self._thinking_buf = ""
 
     def _tool_result(self, event: Event):
-        """工具日志 —— cyan 工具名 + 耗时 + dim 预览。"""
-        timing = f" [dim]· {event.tool_elapsed:.1f}s[/dim]" if event.tool_elapsed else ""
-        console.print(
-            f"  [dim]>[/dim] [bold cyan]{event.tool_name}[/bold cyan]{timing}"
-        )
+        timing = f"{event.tool_elapsed:.1f}s" if event.tool_elapsed else ""
+        console.print(tool_line(event.tool_name, event.tool_ok, timing))
         if event.tool_output:
-            # 预览最多 200 字，多行时取首行
-            preview = event.tool_output.replace("\n", " ")[:200]
-            console.print(f"  [dim]{preview}[/dim]")
+            console.print(preview_block(event.tool_output, 260))
 
-    # ── HITL ───────────────────────────────────────────────────
+    def _teammate(self, event: Event):
+        action = event.teammate_action
+        if action in ("send_message", "idle", "read_inbox") and not self.show_chatroom:
+            return
+        output = trim(event.tool_output, 120)
+        console.print(prefix(f"team {event.teammate_name}", "paulo.accent", action))
+        if output:
+            console.print(preview_block(output, 160))
 
     def _hitl_ask(self, event: Event):
+        details = [
+            Text(event.tool_name, style="paulo.accent.bold"),
+        ]
+        if event.hitl_target:
+            details.append(Text(event.hitl_target, style="paulo.dim"))
+        if event.hitl_preview:
+            details.append(Text(trim(event.hitl_preview, 240), style="paulo.text"))
+
         console.print()
         console.print(
-            f"  [bold yellow]审批[/bold yellow]  [bold cyan]{event.tool_name}[/bold cyan]"
-        )
-        if event.hitl_target:
-            console.print(f"  [dim]目标:[/dim] {event.hitl_target}")
-        if event.hitl_preview:
-            console.print(f"  [dim]{event.hitl_preview[:200]}[/dim]")
-        console.print(
-            f"  [green]y[/green] 允许  "
-            f"[green]a[/green] 始终允许  "
-            f"[red]n[/red] 拒绝"
+            Panel(
+                Group(*details, key_row([
+                    ("y", "allow once", "paulo.success"),
+                    ("a", "always allow", "paulo.success"),
+                    ("n", "deny", "paulo.error"),
+                ])),
+                title=" approval required ",
+                title_align="left",
+                border_style="paulo.warn",
+                padding=(1, 2),
+                expand=False,
+            )
         )
 
     def _hitl_result(self, event: Event):
-        labels = {"deny": "[red]已拒绝[/red]", "allow_once": "[dim]已放行[/dim]",
-                  "allow_always": "[green]已授权[/green]"}
-        console.print(f"  {labels.get(event.hitl_decision, event.hitl_decision)}")
-
-    # ── 系统状态 ──────────────────────────────────────────────
+        labels = {
+            "deny": ("denied", "paulo.error"),
+            "allow_once": ("allowed once", "paulo.dim"),
+            "allow_always": ("always allowed", "paulo.success"),
+        }
+        label, style = labels.get(event.hitl_decision, (event.hitl_decision, "paulo.dim"))
+        console.print(status_line("approval", label, style))
 
     def _compact(self, event: Event):
-        reason = "手动压缩" if event.compact_reason == "manual" else "自动压缩"
-        console.print(f"  [dim]· {reason}[/dim]")
+        reason = "manual" if event.compact_reason == "manual" else "auto"
+        console.print(status_line("compact", f"{reason} context compression"))
 
     def _nag(self):
-        console.print(f"  [dim]· 待办提醒：你有未完成的 Todo 项[/dim]")
+        console.print(status_line("todo", "open items need an update", "paulo.warn"))
 
     def _interrupt(self):
         self._buffer = ""
-        console.print(f"\n  [yellow]· 已中断[/yellow]")
+        console.print()
+        console.print(notice("interrupted", "Current response was stopped.", "paulo.warn"))
 
     def _error(self, event: Event):
-        console.print(f"  [red]✗ {event.error_msg}[/red]")
+        console.print(notice("error", event.error_msg, "paulo.error"))

@@ -1,5 +1,10 @@
 
 from ..config import console
+from ..core.renderer.tui import key_row, preview_block
+
+from rich.console import Group
+from rich.panel import Panel
+from rich.text import Text
 
 
 class HITLGuard:
@@ -23,23 +28,50 @@ class HITLGuard:
     def ask(self, tool_name: str, tool_input: dict) -> str:
         if tool_name in ("write_file", "edit_file"):
             target = tool_input.get("path", "?")
-            preview = tool_input.get("content", tool_input.get("new_text", ""))[:80]
-            summary = f"目标: {target}\n  预览: {preview}"
+            preview = tool_input.get("content", tool_input.get("new_text", ""))
+            body = Group(
+                Text(tool_name, style="paulo.accent.bold"),
+                Text(f"target  {target}", style="paulo.dim"),
+                preview_block(preview, 220, "paulo.text"),
+                key_row([
+                    ("y", "allow once", "paulo.success"),
+                    ("a", "always allow", "paulo.success"),
+                    ("n", "deny", "paulo.error"),
+                ]),
+            )
         elif tool_name == "bash":
-            summary = f"命令: {tool_input.get('command', '?')[:120]}"
+            body = Group(
+                Text(tool_name, style="paulo.accent.bold"),
+                Text(f"command  {tool_input.get('command', '?')[:160]}", style="paulo.text"),
+                key_row([
+                    ("y", "allow once", "paulo.success"),
+                    ("a", "always allow", "paulo.success"),
+                    ("n", "deny", "paulo.error"),
+                ]),
+            )
         else:
-            summary = str(tool_input)[:120]
+            body = Group(
+                Text(tool_name, style="paulo.accent.bold"),
+                preview_block(str(tool_input), 220, "paulo.text"),
+                key_row([
+                    ("y", "allow once", "paulo.success"),
+                    ("a", "always allow", "paulo.success"),
+                    ("n", "deny", "paulo.error"),
+                ]),
+            )
 
         console.print(
-            f"\n[bold yellow]⚠ 敏感操作需要审批[/bold yellow]\n"
-            f"  [bold cyan]{tool_name}[/bold cyan]\n"
-            f"  [dim]{summary}[/dim]\n"
-            f"\n  [green]y[/green] 允许一次  "
-            f"[green]a[/green] 始终允许  "
-            f"[red]n[/red] 拒绝"
+            Panel(
+                body,
+                title=" approval required ",
+                title_align="left",
+                border_style="paulo.warn",
+                padding=(1, 2),
+                expand=False,
+            )
         )
 
-        choice = input("  ► ").strip().lower()
+        choice = input("  approve > ").strip().lower()
 
         if choice == "a":
             return "allow_always"
