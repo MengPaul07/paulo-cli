@@ -253,45 +253,52 @@ def agent_loop(messages: list, on_event: callable = None):
                 "content": f"<inbox>{json.dumps(inbox, indent=2, ensure_ascii=False)}</inbox>",
             })
 
-        # ── 第五步：流式调用 LLM ───────────────────────────
-        # SDK 的 stream() 负责逐 token 产出数据
-        # rich 的 Live + Markdown 负责实时渲染到终端
-        # Ctrl+C 在流式输出期间被捕获 → 中断 LLM 回复但不崩溃
-        try:
-            with client.messages.stream(
-                model=MODEL,
-                system=active_system,
-                messages=messages,
-                tools=active_tools,
-                max_tokens=8000,
-            ) as stream:
-                on_event(Event(type=EventType.THINKING))
-                in_thinking = False
-                thinking_fired = True  # THINKING 只发一次
-                for event in stream:
-                    if event.type == "content_block_start":
-                        if getattr(event.content_block, "type", "") == "thinking":
-                            in_thinking = True
-                        else:
+        # ── 第五步：流式调用 LLM（transient 错误自动重试）──
+        from .core.errors import is_retryable
+        llm_attempt = 0
+        while True:
+            llm_attempt += 1
+            try:
+                with client.messages.stream(
+                    model=MODEL,
+                    system=active_system,
+                    messages=messages,
+                    tools=active_tools,
+                    max_tokens=8000,
+                ) as stream:
+                    on_event(Event(type=EventType.THINKING))
+                    in_thinking = False
+                    for event in stream:
+                        if event.type == "content_block_start":
+                            if getattr(event.content_block, "type", "") == "thinking":
+                                in_thinking = True
+                            else:
+                                in_thinking = False
+                        elif event.type == "content_block_delta":
+                            if in_thinking and getattr(event.delta, "type", "") == "thinking_delta":
+                                on_event(Event(type=EventType.THINKING_DELTA,
+                                               content=getattr(event.delta, "thinking", "")))
+                            elif getattr(event.delta, "type", "") == "text_delta":
+                                in_thinking = False
+                                on_event(Event(type=EventType.TEXT_DELTA,
+                                               content=getattr(event.delta, "text", "")))
+                        elif event.type == "content_block_stop" and in_thinking:
                             in_thinking = False
-                    elif event.type == "content_block_delta":
-                        if in_thinking and getattr(event.delta, "type", "") == "thinking_delta":
-                            on_event(Event(type=EventType.THINKING_DELTA,
-                                           content=getattr(event.delta, "thinking", "")))
-                        elif getattr(event.delta, "type", "") == "text_delta":
-                            in_thinking = False
-                            on_event(Event(type=EventType.TEXT_DELTA,
-                                           content=getattr(event.delta, "text", "")))
-                    elif event.type == "content_block_stop" and in_thinking:
-                        in_thinking = False
-                        on_event(Event(type=EventType.THINKING_DONE))
-                final_message = stream.get_final_message()
-                # 记录 token 消耗
-                from .core.token_tracker import tracker
-                tracker.add(final_message.usage)
-        except KeyboardInterrupt:
-            on_event(Event(type=EventType.INTERRUPT))
-            raise
+                            on_event(Event(type=EventType.THINKING_DONE))
+                    final_message = stream.get_final_message()
+                    from .core.token_tracker import tracker
+                    tracker.add(final_message.usage)
+                break  # success — exit retry loop
+            except KeyboardInterrupt:
+                on_event(Event(type=EventType.INTERRUPT))
+                raise
+            except Exception as e:
+                if not is_retryable(e) or llm_attempt >= 3:
+                    raise
+                import time as _time
+                delay = 2 ** llm_attempt
+                console.print(f"  [dim]retry {llm_attempt}/3 in {delay}s...[/dim]")
+                _time.sleep(delay)
 
         # 将完整消息追加到对话历史
         messages.append({
