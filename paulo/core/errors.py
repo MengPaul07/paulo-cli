@@ -8,7 +8,7 @@
 """
 
 import time
-from .config import console
+from ..config import console
 
 # 需要重试的 HTTP 状态码和异常
 _RETRYABLE_CODES = {429, 500, 502, 503, 504}
